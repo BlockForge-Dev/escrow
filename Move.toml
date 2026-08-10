@@ -1,0 +1,15 @@
+[package]
+name = "milestone_escrow"
+version = "1.0.0"
+authors = []
+
+[addresses]
+escrow_addr = "0x2b2c1988fb1d3688b16d480b7eff6a3d62133a789de1d34f81a5aea7e5fdac05"
+milestone_escrow = "0x2b2c1988fb1d3688b16d480b7eff6a3d62133a789de1d34f81a5aea7e5fdac05"
+
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-framework.git", subdir = "aptos-framework", rev = "mainnet" }
+
+[dev-addresses]
+
+[dev-dependencies]

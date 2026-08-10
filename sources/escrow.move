@@ -12,6 +12,15 @@ module escrow_addr::escrow {
     const EINVALID_FREELANCER: u64 = 3;
     const EESCROW_ALREADY_EXISTS: u64 = 4;
     const EZERO_AMOUNT: u64 = 5;
+    const EESCROW_NOT_FOUND: u64 = 6;
+    const ENOT_AUTHORIZED: u64 = 7;
+    const EDISPUTED: u64 = 8;
+    const EALREADY_DISPUTED: u64 = 9;
+    const EALL_MILESTONES_APPROVED: u64 = 10;
+    const EINVALID_DISPUTE_SPLIT: u64 = 11;
+    const EDEADLINE_NOT_REACHED: u64 = 12;
+    const EMILESTONES_ALREADY_APPROVED: u64 = 13;
+    const ENOT_DISPUTED: u64 = 14;
 
     struct Escrow has key {
         client: address,
@@ -32,6 +41,35 @@ module escrow_addr::escrow {
         arbitrator: address,
         total_locked: u64,
         deadline: u64,
+    }
+
+    #[event]
+    struct MilestoneApproved has drop, store {
+        escrow_addr: address,
+        milestone_index: u64,
+        amount: u64,
+        freelancer: address,
+    }
+
+    #[event]
+    struct DisputeRaised has drop, store {
+        escrow_addr: address,
+        raised_by: address,
+    }
+
+    #[event]
+    struct DisputeResolved has drop, store {
+        escrow_addr: address,
+        arbitrator: address,
+        amount_to_client: u64,
+        amount_to_freelancer: u64,
+    }
+
+    #[event]
+    struct EscrowRefunded has drop, store {
+        escrow_addr: address,
+        client: address,
+        amount: u64,
     }
 
     public fun get_total(milestones: &vector<u64>): u64 {
@@ -89,12 +127,171 @@ module escrow_addr::escrow {
         });
     }
 
+    public entry fun approve_milestone(client: &signer, escrow_addr: address) acquires Escrow {
+        assert!(exists<Escrow>(escrow_addr), EESCROW_NOT_FOUND);
+
+        let client_addr = signer::address_of(client);
+        let escrow = borrow_global_mut<Escrow>(escrow_addr);
+
+        assert!(escrow.client == client_addr, ENOT_AUTHORIZED);
+        assert!(!escrow.disputed, EDISPUTED);
+
+        let num_milestones = vector::length(&escrow.milestones);
+        assert!(escrow.next_milestone < num_milestones, EALL_MILESTONES_APPROVED);
+
+        let current_index = escrow.next_milestone;
+        let milestone_amount = *vector::borrow(&escrow.milestones, current_index);
+        let freelancer_addr = escrow.freelancer;
+
+        let payment = coin::extract(&mut escrow.funds, milestone_amount);
+        coin::deposit(freelancer_addr, payment);
+
+        escrow.next_milestone = current_index + 1;
+
+        event::emit(MilestoneApproved {
+            escrow_addr,
+            milestone_index: current_index,
+            amount: milestone_amount,
+            freelancer: freelancer_addr,
+        });
+
+        if (escrow.next_milestone == num_milestones) {
+            let Escrow {
+                client: _,
+                freelancer: _,
+                arbitrator: _,
+                milestones: _,
+                next_milestone: _,
+                total_locked: _,
+                deadline: _,
+                disputed: _,
+                funds,
+            } = move_from<Escrow>(escrow_addr);
+            coin::destroy_zero(funds);
+        };
+    }
+
+    public entry fun raise_dispute(caller: &signer, escrow_addr: address) acquires Escrow {
+        assert!(exists<Escrow>(escrow_addr), EESCROW_NOT_FOUND);
+
+        let caller_addr = signer::address_of(caller);
+        let escrow = borrow_global_mut<Escrow>(escrow_addr);
+
+        assert!(caller_addr == escrow.client || caller_addr == escrow.freelancer, ENOT_AUTHORIZED);
+        assert!(!escrow.disputed, EALREADY_DISPUTED);
+
+        escrow.disputed = true;
+
+        event::emit(DisputeRaised {
+            escrow_addr,
+            raised_by: caller_addr,
+        });
+    }
+
+    public entry fun resolve_dispute(
+        arbitrator: &signer,
+        escrow_addr: address,
+        amount_to_client: u64,
+        amount_to_freelancer: u64,
+    ) acquires Escrow {
+        assert!(exists<Escrow>(escrow_addr), EESCROW_NOT_FOUND);
+
+        let arbitrator_addr = signer::address_of(arbitrator);
+        let escrow_ref = borrow_global<Escrow>(escrow_addr);
+
+        assert!(escrow_ref.arbitrator == arbitrator_addr, ENOT_AUTHORIZED);
+        assert!(escrow_ref.disputed, ENOT_DISPUTED);
+
+        let Escrow {
+            client,
+            freelancer,
+            arbitrator: _,
+            milestones: _,
+            next_milestone: _,
+            total_locked: _,
+            deadline: _,
+            disputed: _,
+            funds,
+        } = move_from<Escrow>(escrow_addr);
+
+        let total_remaining = coin::value(&funds);
+        assert!(amount_to_client + amount_to_freelancer == total_remaining, EINVALID_DISPUTE_SPLIT);
+
+        if (amount_to_client > 0) {
+            let client_payment = coin::extract(&mut funds, amount_to_client);
+            coin::deposit(client, client_payment);
+        };
+
+        if (amount_to_freelancer > 0) {
+            let freelancer_payment = coin::extract(&mut funds, amount_to_freelancer);
+            coin::deposit(freelancer, freelancer_payment);
+        };
+
+        coin::destroy_zero(funds);
+
+        event::emit(DisputeResolved {
+            escrow_addr,
+            arbitrator: arbitrator_addr,
+            amount_to_client,
+            amount_to_freelancer,
+        });
+    }
+
+    public entry fun refund(client: &signer, escrow_addr: address) acquires Escrow {
+        assert!(exists<Escrow>(escrow_addr), EESCROW_NOT_FOUND);
+
+        let client_addr = signer::address_of(client);
+        let escrow_ref = borrow_global<Escrow>(escrow_addr);
+
+        assert!(escrow_ref.client == client_addr, ENOT_AUTHORIZED);
+        assert!(!escrow_ref.disputed, EDISPUTED);
+        assert!(timestamp::now_seconds() >= escrow_ref.deadline, EDEADLINE_NOT_REACHED);
+        assert!(escrow_ref.next_milestone == 0, EMILESTONES_ALREADY_APPROVED);
+
+        let Escrow {
+            client: _,
+            freelancer: _,
+            arbitrator: _,
+            milestones: _,
+            next_milestone: _,
+            total_locked: _,
+            deadline: _,
+            disputed: _,
+            funds,
+        } = move_from<Escrow>(escrow_addr);
+
+        let amount = coin::value(&funds);
+        coin::deposit(client_addr, funds);
+
+        event::emit(EscrowRefunded {
+            escrow_addr,
+            client: client_addr,
+            amount,
+        });
+    }
+
+    // View / Inspection functions
     public fun exists_at(addr: address): bool {
         exists<Escrow>(addr)
     }
 
     public fun get_total_locked(addr: address): u64 acquires Escrow {
-        assert!(exists<Escrow>(addr), 0);
+        assert!(exists<Escrow>(addr), EESCROW_NOT_FOUND);
         borrow_global<Escrow>(addr).total_locked
+    }
+
+    public fun get_next_milestone(addr: address): u64 acquires Escrow {
+        assert!(exists<Escrow>(addr), EESCROW_NOT_FOUND);
+        borrow_global<Escrow>(addr).next_milestone
+    }
+
+    public fun is_disputed(addr: address): bool acquires Escrow {
+        assert!(exists<Escrow>(addr), EESCROW_NOT_FOUND);
+        borrow_global<Escrow>(addr).disputed
+    }
+
+    public fun get_remaining_funds(addr: address): u64 acquires Escrow {
+        assert!(exists<Escrow>(addr), EESCROW_NOT_FOUND);
+        coin::value(&borrow_global<Escrow>(addr).funds)
     }
 }

@@ -9,6 +9,13 @@ import type { EscrowItem, EscrowResource, NetworkType, EscrowRole } from './type
 import { DEFAULT_MODULE_ADDRESS, NETWORK_NODE_URLS } from './config';
 import { Plus, RefreshCw, Layers, ShieldCheck, AlertCircle, Info, Sparkles } from 'lucide-react';
 
+interface EscrowStoreResource {
+  escrows: {
+    handle: string;
+  };
+  next_escrow_id: string;
+}
+
 export const App: React.FC = () => {
   const { account: walletAccount, wallets, connect, disconnect, signAndSubmitTransaction } = useWallet();
 
@@ -26,10 +33,8 @@ export const App: React.FC = () => {
   const [isWalletModalOpen, setIsWalletModalOpen] = useState<boolean>(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'client' | 'freelancer' | 'arbitrator'>('all');
 
-  // Address lookup list for scanning escrows
   const [searchAddresses, setSearchAddresses] = useState<string[]>([]);
 
-  // Update connected account when wallet changes
   useEffect(() => {
     if (walletAccount?.address) {
       const addrStr = walletAccount.address.toString();
@@ -40,14 +45,12 @@ export const App: React.FC = () => {
     }
   }, [walletAccount]);
 
-  // Sync module address into search list
   useEffect(() => {
     if (moduleAddress && !searchAddresses.includes(moduleAddress)) {
       setSearchAddresses((prev) => [...prev, moduleAddress]);
     }
   }, [moduleAddress]);
 
-  // Aptos SDK Instance
   const getAptosClient = useCallback(() => {
     let sdkNetwork = AptosNetwork.TESTNET;
     if (network === 'mainnet') sdkNetwork = AptosNetwork.MAINNET;
@@ -61,7 +64,6 @@ export const App: React.FC = () => {
     return new Aptos(config);
   }, [network]);
 
-  // Fetch Escrow Resource at a given address
   const fetchEscrows = useCallback(async () => {
     setIsLoading(true);
     const aptos = getAptosClient();
@@ -75,27 +77,48 @@ export const App: React.FC = () => {
 
     for (const addr of addressesToQuery) {
       try {
-        const resourceType = `${moduleAddress}::escrow::Escrow` as `${string}::${string}::${string}`;
-        const resource = await aptos.getAccountResource<EscrowResource>({
+        const storeResourceType = `${moduleAddress}::escrow::EscrowStore` as `${string}::${string}::${string}`;
+        const store = await aptos.getAccountResource<EscrowStoreResource>({
           accountAddress: addr,
-          resourceType,
+          resourceType: storeResourceType,
         });
 
-        if (resource) {
-          let role: EscrowRole = 'guest';
-          const normalizedCurr = currentAccount?.toLowerCase();
-          if (normalizedCurr === resource.client.toLowerCase()) role = 'client';
-          else if (normalizedCurr === resource.freelancer.toLowerCase()) role = 'freelancer';
-          else if (normalizedCurr === resource.arbitrator.toLowerCase()) role = 'arbitrator';
+        if (store) {
+          const nextId = parseInt(store.next_escrow_id, 10) || 1;
+          const tableHandle = store.escrows.handle;
 
-          fetched.push({
-            address: addr,
-            resource,
-            role,
-          });
+          for (let id = 1; id < nextId; id++) {
+            try {
+              const item = await aptos.getTableItem<EscrowResource>({
+                handle: tableHandle,
+                data: {
+                  key_type: 'u64',
+                  value_type: `${moduleAddress}::escrow::Escrow`,
+                  key: id.toString(),
+                },
+              });
+
+              if (item) {
+                let role: EscrowRole = 'guest';
+                const normalizedCurr = currentAccount?.toLowerCase();
+                if (normalizedCurr === item.client.toLowerCase()) role = 'client';
+                else if (normalizedCurr === item.freelancer.toLowerCase()) role = 'freelancer';
+                else if (normalizedCurr === item.arbitrator.toLowerCase()) role = 'arbitrator';
+
+                fetched.push({
+                  address: addr,
+                  escrowId: id,
+                  resource: item,
+                  role,
+                });
+              }
+            } catch (err) {
+              // Escrow item deleted or not found
+            }
+          }
         }
       } catch (err) {
-        // Resource doesn't exist at this address, skip silently
+        // EscrowStore not found at this address
       }
     }
 
@@ -107,7 +130,6 @@ export const App: React.FC = () => {
     fetchEscrows();
   }, [fetchEscrows]);
 
-  // Helper to submit transaction via Wallet Extension or Private Key
   const submitTx = async (entryFunction: string, functionArguments: any[]) => {
     const aptos = getAptosClient();
 
@@ -144,7 +166,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Handlers for contract interactions
   const handleCreateEscrow = async (data: {
     freelancer: string;
     arbitrator: string;
@@ -156,7 +177,7 @@ export const App: React.FC = () => {
       return;
     }
 
-    setStatusMessage({ type: 'info', msg: 'Submitting create_escrow transaction to blockchain...' });
+    setStatusMessage({ type: 'info', msg: 'Submitting create_escrow transaction...' });
     try {
       const hash = await submitTx('create_escrow', [
         data.freelancer,
@@ -166,7 +187,6 @@ export const App: React.FC = () => {
       ]);
 
       setStatusMessage({ type: 'success', msg: `Escrow created successfully! Tx: ${hash.substring(0, 10)}...` });
-      
       if (!searchAddresses.includes(currentAccount)) {
         setSearchAddresses((prev) => [...prev, currentAccount]);
       }
@@ -177,12 +197,13 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleApproveMilestone = async (escrowAddr: string) => {
-    setActionLoading(escrowAddr);
-    setStatusMessage({ type: 'info', msg: 'Approving milestone payment...' });
+  const handleApproveMilestone = async (clientAddr: string, escrowId: number) => {
+    const key = `${clientAddr}-${escrowId}`;
+    setActionLoading(key);
+    setStatusMessage({ type: 'info', msg: `Approving milestone payment for Escrow #${escrowId}...` });
     try {
-      const hash = await submitTx('approve_milestone', [escrowAddr]);
-      setStatusMessage({ type: 'success', msg: `Milestone approved! Funds released. Tx: ${hash.substring(0, 10)}...` });
+      const hash = await submitTx('approve_milestone', [clientAddr, escrowId]);
+      setStatusMessage({ type: 'success', msg: `Milestone approved! Tx: ${hash.substring(0, 10)}...` });
       await fetchEscrows();
     } catch (err: any) {
       setStatusMessage({ type: 'error', msg: err?.message || 'Failed to approve milestone.' });
@@ -191,12 +212,13 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRaiseDispute = async (escrowAddr: string) => {
-    setActionLoading(escrowAddr);
-    setStatusMessage({ type: 'info', msg: 'Raising dispute on escrow...' });
+  const handleRaiseDispute = async (clientAddr: string, escrowId: number) => {
+    const key = `${clientAddr}-${escrowId}`;
+    setActionLoading(key);
+    setStatusMessage({ type: 'info', msg: `Raising dispute for Escrow #${escrowId}...` });
     try {
-      const hash = await submitTx('raise_dispute', [escrowAddr]);
-      setStatusMessage({ type: 'success', msg: `Dispute raised successfully. Tx: ${hash.substring(0, 10)}...` });
+      const hash = await submitTx('raise_dispute', [clientAddr, escrowId]);
+      setStatusMessage({ type: 'success', msg: `Dispute raised! 7-day timeout timer started. Tx: ${hash.substring(0, 10)}...` });
       await fetchEscrows();
     } catch (err: any) {
       setStatusMessage({ type: 'error', msg: err?.message || 'Failed to raise dispute.' });
@@ -205,16 +227,18 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleResolveDispute = async (escrowAddr: string, clientAmount: number, freelancerAmount: number) => {
-    setActionLoading(escrowAddr);
-    setStatusMessage({ type: 'info', msg: 'Submitting dispute resolution...' });
+  const handleResolveDispute = async (clientAddr: string, escrowId: number, clientAmount: number, freelancerAmount: number) => {
+    const key = `${clientAddr}-${escrowId}`;
+    setActionLoading(key);
+    setStatusMessage({ type: 'info', msg: `Resolving dispute for Escrow #${escrowId}...` });
     try {
       const hash = await submitTx('resolve_dispute', [
-        escrowAddr,
+        clientAddr,
+        escrowId,
         clientAmount,
         freelancerAmount,
       ]);
-      setStatusMessage({ type: 'success', msg: `Dispute resolved and funds distributed! Tx: ${hash.substring(0, 10)}...` });
+      setStatusMessage({ type: 'success', msg: `Dispute resolved! Tx: ${hash.substring(0, 10)}...` });
       await fetchEscrows();
     } catch (err: any) {
       setStatusMessage({ type: 'error', msg: err?.message || 'Failed to resolve dispute.' });
@@ -224,12 +248,28 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRefund = async (escrowAddr: string) => {
-    setActionLoading(escrowAddr);
-    setStatusMessage({ type: 'info', msg: 'Requesting full refund...' });
+  const handleClaimTimeoutResolution = async (clientAddr: string, escrowId: number) => {
+    const key = `${clientAddr}-${escrowId}`;
+    setActionLoading(key);
+    setStatusMessage({ type: 'info', msg: `Claiming 50/50 dispute timeout resolution for Escrow #${escrowId}...` });
     try {
-      const hash = await submitTx('refund', [escrowAddr]);
-      setStatusMessage({ type: 'success', msg: `Refund executed successfully! Tx: ${hash.substring(0, 10)}...` });
+      const hash = await submitTx('claim_timeout_resolution', [clientAddr, escrowId]);
+      setStatusMessage({ type: 'success', msg: `Dispute timeout auto-resolved 50/50! Tx: ${hash.substring(0, 10)}...` });
+      await fetchEscrows();
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', msg: err?.message || 'Failed to claim dispute timeout.' });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRefund = async (clientAddr: string, escrowId: number) => {
+    const key = `${clientAddr}-${escrowId}`;
+    setActionLoading(key);
+    setStatusMessage({ type: 'info', msg: `Refunding remaining unapproved funds for Escrow #${escrowId}...` });
+    try {
+      const hash = await submitTx('refund', [clientAddr, escrowId]);
+      setStatusMessage({ type: 'success', msg: `Refund executed! Tx: ${hash.substring(0, 10)}...` });
       await fetchEscrows();
     } catch (err: any) {
       setStatusMessage({ type: 'error', msg: err?.message || 'Failed to execute refund.' });
@@ -238,7 +278,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Filter escrows based on tab
   const filteredEscrows = escrows.filter((item) => {
     if (activeFilter === 'client') return item.role === 'client';
     if (activeFilter === 'freelancer') return item.role === 'freelancer';
@@ -290,13 +329,13 @@ export const App: React.FC = () => {
       <div className="glass-card" style={{ padding: '32px', marginBottom: '32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
         <div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8', padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 600, marginBottom: '12px' }}>
-            <Sparkles size={14} /> Milestone Escrow Protocol
+            <Sparkles size={14} /> Multi-Escrow Protocol v2
           </div>
           <h2 style={{ margin: 0, fontSize: '28px', fontWeight: 800 }}>
             Escrow Dashboard
           </h2>
           <p style={{ margin: '8px 0 0 0', color: 'var(--text-muted)', fontSize: '14px', maxWidth: '600px' }}>
-            Lock funds securely on Aptos Move, release milestone payouts incrementally, and resolve disputes with multi-party governance.
+            Manage multiple active escrows simultaneously, release milestone payments, refund unapproved funds, and trigger 50/50 dispute auto-resolutions on Aptos.
           </p>
         </div>
 
@@ -422,12 +461,13 @@ export const App: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: '20px' }}>
           {filteredEscrows.map((item) => (
             <EscrowCard
-              key={item.address}
+              key={`${item.address}-${item.escrowId}`}
               escrow={item}
               currentAccount={currentAccount}
               onApproveMilestone={handleApproveMilestone}
               onRaiseDispute={handleRaiseDispute}
               onResolveDispute={handleResolveDispute}
+              onClaimTimeoutResolution={handleClaimTimeoutResolution}
               onRefund={handleRefund}
               actionLoading={actionLoading}
             />

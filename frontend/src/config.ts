@@ -1,6 +1,6 @@
 import type { NetworkType } from './types';
 
-export const DEFAULT_MODULE_ADDRESS = '0x3c6b0ded4b64efe9693eedab0e4a2b1dd073662bcecbd3b5a975370b5db644d0';
+export const DEFAULT_MODULE_ADDRESS = '0x9738830421e09f651a3c66afa6acf1c028a60a02dfbbfce348cf03c02fd04540';
 
 export const NETWORK_NODE_URLS: Record<NetworkType, string> = {
   mainnet: 'https://api.mainnet.aptoslabs.com/v1',

@@ -4,8 +4,8 @@ version = "1.0.0"
 authors = []
 
 [addresses]
-escrow_addr = "0x3c6b0ded4b64efe9693eedab0e4a2b1dd073662bcecbd3b5a975370b5db644d0"
-milestone_escrow = "0x3c6b0ded4b64efe9693eedab0e4a2b1dd073662bcecbd3b5a975370b5db644d0"
+escrow_addr = "0x9738830421e09f651a3c66afa6acf1c028a60a02dfbbfce348cf03c02fd04540"
+milestone_escrow = "0x9738830421e09f651a3c66afa6acf1c028a60a02dfbbfce348cf03c02fd04540"
 
 [dependencies]
 AptosFramework = { git = "https://github.com/aptos-labs/aptos-framework.git", subdir = "aptos-framework", rev = "mainnet" }

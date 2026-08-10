@@ -2,9 +2,10 @@ module escrow_addr::escrow {
     use aptos_framework::coin::{Self, Coin};
     use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::timestamp;
-    use aptos_framework::event;
     use std::vector;
     use std::signer;
+
+    use escrow_addr::events;
 
     /// Error codes
     const EEMPTY_MILESTONES: u64 = 1;
@@ -32,44 +33,6 @@ module escrow_addr::escrow {
         deadline: u64,                  // unix timestamp after which refund is possible
         disputed: bool,
         funds: Coin<AptosCoin>,
-    }
-
-    #[event]
-    struct EscrowCreated has drop, store {
-        client: address,
-        freelancer: address,
-        arbitrator: address,
-        total_locked: u64,
-        deadline: u64,
-    }
-
-    #[event]
-    struct MilestoneApproved has drop, store {
-        escrow_addr: address,
-        milestone_index: u64,
-        amount: u64,
-        freelancer: address,
-    }
-
-    #[event]
-    struct DisputeRaised has drop, store {
-        escrow_addr: address,
-        raised_by: address,
-    }
-
-    #[event]
-    struct DisputeResolved has drop, store {
-        escrow_addr: address,
-        arbitrator: address,
-        amount_to_client: u64,
-        amount_to_freelancer: u64,
-    }
-
-    #[event]
-    struct EscrowRefunded has drop, store {
-        escrow_addr: address,
-        client: address,
-        amount: u64,
     }
 
     public fun get_total(milestones: &vector<u64>): u64 {
@@ -118,13 +81,13 @@ module escrow_addr::escrow {
 
         move_to(client, escrow);
 
-        event::emit(EscrowCreated {
-            client: client_addr,
+        events::emit_escrow_created(
+            client_addr,
             freelancer,
             arbitrator,
             total_locked,
             deadline,
-        });
+        );
     }
 
     public entry fun approve_milestone(client: &signer, escrow_addr: address) acquires Escrow {
@@ -148,12 +111,12 @@ module escrow_addr::escrow {
 
         escrow.next_milestone = current_index + 1;
 
-        event::emit(MilestoneApproved {
+        events::emit_milestone_approved(
             escrow_addr,
-            milestone_index: current_index,
-            amount: milestone_amount,
-            freelancer: freelancer_addr,
-        });
+            current_index,
+            milestone_amount,
+            freelancer_addr,
+        );
 
         if (escrow.next_milestone == num_milestones) {
             let Escrow {
@@ -182,10 +145,7 @@ module escrow_addr::escrow {
 
         escrow.disputed = true;
 
-        event::emit(DisputeRaised {
-            escrow_addr,
-            raised_by: caller_addr,
-        });
+        events::emit_dispute_raised(escrow_addr, caller_addr);
     }
 
     public entry fun resolve_dispute(
@@ -229,12 +189,12 @@ module escrow_addr::escrow {
 
         coin::destroy_zero(funds);
 
-        event::emit(DisputeResolved {
+        events::emit_dispute_resolved(
             escrow_addr,
-            arbitrator: arbitrator_addr,
+            arbitrator_addr,
             amount_to_client,
             amount_to_freelancer,
-        });
+        );
     }
 
     public entry fun refund(client: &signer, escrow_addr: address) acquires Escrow {
@@ -263,11 +223,7 @@ module escrow_addr::escrow {
         let amount = coin::value(&funds);
         coin::deposit(client_addr, funds);
 
-        event::emit(EscrowRefunded {
-            escrow_addr,
-            client: client_addr,
-            amount,
-        });
+        events::emit_escrow_refunded(escrow_addr, client_addr, amount);
     }
 
     // View / Inspection functions
